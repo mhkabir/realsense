@@ -78,7 +78,8 @@ BaseRealSenseNode::BaseRealSenseNode(ros::NodeHandle& nodeHandle,
     _pnh(privateNodeHandle), _json_file_path(""),
     _serial_no(serial_no), _base_frame_id(""),
     _intialize_time_base(false),
-    _namespace(getNamespaceStr())
+    _namespace(getNamespaceStr()),
+    _mavros_syncer(std::set<stream_index_pair>({INFRA1}))
 {
     // Types for depth stream
     _is_frame_arrived[DEPTH] = false;
@@ -393,9 +394,79 @@ void BaseRealSenseNode::getParameters()
     _pnh.param("aligned_depth_to_infra1_frame_id",  _depth_aligned_frame_id[INFRA1],  DEFAULT_ALIGNED_DEPTH_TO_INFRA1_FRAME_ID);
     _pnh.param("aligned_depth_to_infra2_frame_id",  _depth_aligned_frame_id[INFRA2],  DEFAULT_ALIGNED_DEPTH_TO_INFRA2_FRAME_ID);
     _pnh.param("aligned_depth_to_fisheye_frame_id", _depth_aligned_frame_id[FISHEYE], DEFAULT_ALIGNED_DEPTH_TO_FISHEYE_FRAME_ID);
+
     _pnh.param("clip_distance", _clipping_distance, static_cast<float>(-1.0));
     _pnh.param("linear_accel_cov", _linear_accel_cov, static_cast<float>(0.01));
     _pnh.param("hold_back_imu_for_frames", _hold_back_imu_for_frames, HOLD_BACK_IMU_FOR_FRAMES);
+
+    _pnh.param("inter_cam_sync_mode", _inter_cam_sync_mode, INTER_CAM_SYNC_MODE);
+
+    // Use cases we want to support : 
+    // 1. Camera free running
+    // 5. Camera master, capture from PX4
+    // 3. Camera slave, hardware triggering from PX4
+    // 4. Camera slave, hardware triggering from another camera
+    // 6. Camera slave, capture from PX4
+
+    /*
+    std::transform(inter_cam_sync_mode_param.begin(), inter_cam_sync_mode_param.end(),
+        inter_cam_sync_mode_param.begin(), ::tolower);
+
+    // note: added a "none" mode, as not all sensor types/firmware versions allow setting of the sync mode.
+    //       Use "none" if nothing is specified or an error occurs.
+    //       Default (mode = 0) here refers to the default sync mode as per Intel whitepaper,
+    //       which corresponds to master mode but no trigger output on Pin 5.
+    //       Master (mode = 1) activates trigger signal output on Pin 5.
+    //       Slave (mode = 2) causes the realsense to listen to a trigger signal on pin 5.
+
+    if(inter_cam_sync_mode_param == "default"){ _inter_cam_sync_mode = 0; }
+    else if(inter_cam_sync_mode_param == "master") { _inter_cam_sync_mode = 1; }
+    else if(inter_cam_sync_mode_param == "slave"){ _inter_cam_sync_mode = 2; }
+    else if(inter_cam_sync_mode_param == "none") { _inter_cam_sync_mode = -1; }
+    else {
+        _inter_cam_sync_mode = -1;
+         ROS_WARN_STREAM("Invalid inter cam sync mode (" << inter_cam_sync_mode_param << ")! Not using inter cam sync mode.");
+    }*/
+
+    _pnh.param("kalibr_time_offset", _kalibr_time_offset, KALIBR_TIME_OFFSET);
+
+    // 0 - No hardware synchronisation
+    // 1 - Trigger camera externally
+    // 2 - Capture camera externally
+    _pnh.param("hardware_sync_mode", _hardware_sync_mode, HARDWARE_SYNC_MODE);
+
+    /*
+    if(_mavros_triggering && _inter_cam_sync_mode != 2){
+        ROS_WARN_STREAM("Force mavros triggering enabled but device not set to slave triggering mode!");
+    }*/
+
+    // set up mavros trigger if enabled
+    if(_hardware_sync_mode > 0){
+
+        // Create callback for synchronised images
+        std::function<void(const stream_index_pair& channel,
+                           const ros::Time& new_stamp,
+                           const std::shared_ptr<cache_type>&)> restamp_cb = [this](const stream_index_pair& channel,
+                                                                             const ros::Time& new_stamp,
+                                                                             const  std::shared_ptr<cache_type>& f_ptr){
+            // restamp frame
+            f_ptr->img->header.stamp = new_stamp;
+            f_ptr->info.header.stamp = new_stamp;
+
+            //publish
+            auto& info_publisher = this->_info_publisher.at(channel);
+            auto& image_publisher = this->_image_publishers.at(channel);
+            info_publisher.publish(f_ptr->info);
+
+            image_publisher.first.publish(f_ptr->img);
+            image_publisher.second->update();
+
+            ROS_DEBUG("%s stream published", rs2_stream_to_string(channel.first));
+        };
+
+        _mavros_syncer.setup(restamp_cb, _fps[INFRA1], _kalibr_time_offset, _hardware_sync_mode);
+    }
+>>>>>>> Rework state machine to sync hw trigger and frames
 }
 
 void BaseRealSenseNode::setupDevice()
@@ -495,6 +566,13 @@ void BaseRealSenseNode::setupDevice()
                     _enable[stream_index] = false;
                 }
             }
+        }
+
+        // set cam sync mode
+        if(_inter_cam_sync_mode != -1)
+        {
+            _sensors[DEPTH].set_option(RS2_OPTION_INTER_CAM_SYNC_MODE, _inter_cam_sync_mode);
+            ROS_INFO_STREAM("Inter cam sync mode set to " << _inter_cam_sync_mode);
         }
     }
     catch(const std::exception& ex)
@@ -823,9 +901,20 @@ void BaseRealSenseNode::setupStreams()
             }
         }
 
+        if(_hardware_sync_mode > 0) {
+            ros::spinOnce();
+            _mavros_syncer.start();
+            ros::spinOnce();
+        }
+
         auto frame_callback = [this](rs2::frame frame)
         {
+<<<<<<< c5ea27245967e0938f7d10384f4b7279e01000b4
             _synced_imu_publisher->Pause();
+=======
+          ros::spinOnce();
+
+>>>>>>> Rework state machine to sync hw trigger and frames
             try{
                 double frame_time = frame.get_timestamp();
 
@@ -988,6 +1077,8 @@ void BaseRealSenseNode::setupStreams()
                               rs2_stream_to_string(stream_type), stream_index, frame.get_frame_number(), frame_time, t.toNSec());
 
                     stream_index_pair sip{stream_type,stream_index};
+
+                    ros::spinOnce();
                     publishFrame(frame, t,
                                  sip,
                                  _image,
@@ -1812,16 +1903,59 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
         img->step = width * bpp;
         img->header.frame_id = optical_frame_id.at(stream);
         img->header.stamp = t;
-        img->header.seq = seq[stream];
+        img->header.seq = f.get_frame_number();
 
         auto& cam_info = camera_info.at(stream);
-        cam_info.header.stamp = t;
-        cam_info.header.seq = seq[stream];
-        info_publisher.publish(cam_info);
+        cam_info.header.stamp = img->header.stamp;
+        cam_info.header.seq = img->header.seq;
 
+        if(_hardware_sync_mode > 0) {
+            // Hardware synchronisation enabled, synchronise and publish
+            ros::Time hw_synced_stamp = img->header.stamp;
+            double exposure = 0.0;
+            if(f.supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE)) {
+                exposure = static_cast<double>(f.get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE));
+            } else {
+                ROS_WARN("Frame does not provide exposure metadata. Using fixed exposure offset for timestamp...");
+                exposure = _sensors[DEPTH].get_option(RS2_OPTION_EXPOSURE); // TODO : INFRA1?
+            } 
+
+            // allow clearing of IMU queue before we lookup the timestamp TODO what
+            ros::spinOnce();
+
+            if(!_mavros_syncer.lookupTriggerStamp(stream, cam_info.header.seq, t, exposure, &hw_synced_stamp)){
+
+                auto cache = std::make_shared<cache_type>();
+                cache->img = img;
+                cache->info = cam_info;
+
+                // cache frame and return if timestamp not available
+                // return without publishing
+                _mavros_syncer.cacheFrame(stream, img->header.seq, t, exposure, cache);
+                return;
+            }
+
+            // matched frame to trigger: update header and stamp and publish
+            img->header.stamp = hw_synced_stamp;
+            cam_info.header.stamp = hw_synced_stamp; // TODO why do we do this here?    
+                                                    // TODO What happened to the callback from above?
+            info_publisher.publish(cam_info);
+            image_publisher.first.publish(img);
+            image_publisher.second->update();
+
+        } else {
+            // No hardware synchronisation, just publish
+            info_publisher.publish(cam_info);
+            image_publisher.first.publish(img);
+            image_publisher.second->update();
+        }
+
+<<<<<<< c5ea27245967e0938f7d10384f4b7279e01000b4
         image_publisher.first.publish(img);
         image_publisher.second->update();
         // ROS_INFO_STREAM("fid: " << cam_info.header.seq << ", time: " << std::setprecision (20) << t.toSec());
+=======
+>>>>>>> Rework state machine to sync hw trigger and frames
         ROS_DEBUG("%s stream published", rs2_stream_to_string(f.get_profile().stream_type()));
     }
 }

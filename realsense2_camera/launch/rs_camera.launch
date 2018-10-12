@@ -40,6 +40,10 @@
   <arg name="enable_sync"           default="false"/>
   <arg name="align_depth"           default="false"/>
 
+  <arg name="inter_cam_sync_mode"   default="0"/>
+  <arg name="hardware_sync_mode"    default="0"/>
+  <arg name="kalibr_time_offset"    default="0.0"/>
+
   <arg name="filters"               default=""/>
   <arg name="clip_distance"         default="-2"/>
   <arg name="linear_accel_cov"      default="0.01"/>
@@ -85,11 +89,18 @@
       <arg name="gyro_fps"                 value="$(arg gyro_fps)"/>
       <arg name="accel_fps"                value="$(arg accel_fps)"/>
       <arg name="enable_imu"               value="$(arg enable_imu)"/>
-
       <arg name="filters"                  value="$(arg filters)"/>
+<<<<<<< c5ea27245967e0938f7d10384f4b7279e01000b4
       <arg name="clip_distance"            value="$(arg clip_distance)"/>
       <arg name="linear_accel_cov"         value="$(arg linear_accel_cov)"/>
       <arg name="initial_reset"            value="$(arg initial_reset)"/>
+=======
+
+
+      <arg name="inter_cam_sync_mode"      value="$(arg inter_cam_sync_mode)"/>
+      <arg name="mavros_triggering"        value="$(arg mavros_triggering)"/>
+      <arg name="kalibr_time_offset"       value="$(arg kalibr_time_offset)"/>
+>>>>>>> Rework state machine to sync hw trigger and frames
     </include>
   </group>
 </launch>

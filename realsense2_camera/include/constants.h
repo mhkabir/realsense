@@ -36,6 +36,7 @@ namespace realsense2_camera
     const bool ALIGN_DEPTH    = false;
     const bool POINTCLOUD     = false;
     const bool SYNC_FRAMES    = false;
+    const bool MAVROS_TRIGGERING = false;
 
     const int DEPTH_WIDTH     = 640;
     const int DEPTH_HEIGHT    = 480;
@@ -52,7 +53,6 @@ namespace realsense2_camera
     const int FISHEYE_WIDTH   = 640;
     const int FISHEYE_HEIGHT  = 480;
 
-
     const int DEPTH_FPS       = 30;
     const int INFRA1_FPS      = 30;
     const int INFRA2_FPS      = 30;
@@ -60,7 +60,6 @@ namespace realsense2_camera
     const int FISHEYE_FPS     = 30;
     const int GYRO_FPS        = 400;
     const int ACCEL_FPS       = 250;
-
 
     const bool ENABLE_DEPTH   = true;
     const bool ENABLE_INFRA1  = true;
@@ -71,6 +70,9 @@ namespace realsense2_camera
     const bool UNITE_IMU      = true;
     const bool HOLD_BACK_IMU_FOR_FRAMES = false;
 
+    const int INTER_CAM_SYNC_MODE                      = 0;
+    const int HARDWARE_SYNC_MODE                       = 0;
+    const double KALIBR_TIME_OFFSET                    = 0.0;
 
     const std::string DEFAULT_BASE_FRAME_ID            = "camera_link";
     const std::string DEFAULT_DEPTH_FRAME_ID           = "camera_depth_frame";
