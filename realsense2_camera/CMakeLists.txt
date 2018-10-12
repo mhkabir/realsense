@@ -8,6 +8,7 @@ find_package(catkin REQUIRED COMPONENTS
     message_generation
     roscpp
     sensor_msgs
+    mavros_msgs
     std_msgs
     nodelet
     cv_bridge
@@ -56,6 +57,7 @@ generate_messages(
     DEPENDENCIES
     sensor_msgs
     std_msgs
+    mavros_msgs
     )
 
 include_directories(

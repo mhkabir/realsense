@@ -80,7 +80,7 @@ void RS435Node::setParam(rs435_paramsConfig &config, rs435_param param)
         break;
     case rs435_depth_exposure:
     {
-        static const auto rs435_depth_exposure_factor = 20;
+        static const auto rs435_depth_exposure_factor = 1;
         ROS_DEBUG_STREAM("rs435_depth_exposure: " << config.rs435_depth_exposure * rs435_depth_exposure_factor);
         _sensors[DEPTH].set_option(rs2_option::RS2_OPTION_EXPOSURE, config.rs435_depth_exposure * rs435_depth_exposure_factor);
     }

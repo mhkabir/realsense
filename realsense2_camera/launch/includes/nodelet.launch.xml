@@ -65,13 +65,16 @@
   <arg name="aligned_depth_to_color_frame_id"   default="$(arg tf_prefix)_aligned_depth_to_color_frame"/>
   <arg name="aligned_depth_to_infra1_frame_id" default="$(arg tf_prefix)_aligned_depth_to_infra1_frame"/>
   <arg name="aligned_depth_to_infra2_frame_id"   default="$(arg tf_prefix)_aligned_depth_to_infra2_frame"/>
-  <arg name="aligned_depth_to_fisheye_frame_id"    default="$(arg tf_prefix)_aligned_depth_to_fisheye_frame"/>
+  <arg name="aligned_depth_to_fisheye_frame_id" default="$(arg tf_prefix)_aligned_depth_to_fisheye_frame"/>
 
   <arg name="filters"             default=""/>
 
+  <arg name="inter_cam_sync_mode" default="slave" />
+  <arg name="mavros_triggering"   default="true" />
+  <arg name="kalibr_time_offset"   default="0.0" />
 
   <node pkg="nodelet" type="nodelet" name="$(arg manager)" args="manager" output="screen"/>
-  <node pkg="nodelet" type="nodelet" name="realsense2_camera" args="load realsense2_camera/RealSenseNodeFactory $(arg manager)">
+  <node pkg="nodelet" type="nodelet" name="realsense2_camera" args="load realsense2_camera/RealSenseNodeFactory $(arg manager)" output="screen">
     <param name="serial_no"                type="str"  value="$(arg serial_no)"/>
     <param name="json_file_path"           type="str"  value="$(arg json_file_path)"/>
     <param name="rosbag_filename"          type="str"  value="$(arg rosbag_filename)"/>
@@ -128,9 +131,13 @@
     <param name="aligned_depth_to_color_frame_id"   type="str"  value="$(arg aligned_depth_to_color_frame_id)"/>
     <param name="aligned_depth_to_infra1_frame_id"  type="str"  value="$(arg aligned_depth_to_infra1_frame_id)"/>
     <param name="aligned_depth_to_infra2_frame_id"  type="str"  value="$(arg aligned_depth_to_infra2_frame_id)"/>
-    <param name="aligned_depth_to_fisheye_frame_id" type="str"  value="$(arg aligned_depth_to_fisheye_frame_id)"/>
+    <param name="aligned_depth_to_fisheye_frame_id" type="str" value="$(arg aligned_depth_to_fisheye_frame_id)"/>
     
     <param name="filters" type="str"  value="$(arg filters)"/>
+
+    <param name="inter_cam_sync_mode"      type="str"  value="$(arg inter_cam_sync_mode)"/>
+    <param name="mavros_triggering"        type="bool" value="$(arg mavros_triggering)" />
+    <param name="kalibr_time_offset"        type="double" value="$(arg kalibr_time_offset)" />
   </node>
 </launch>
 

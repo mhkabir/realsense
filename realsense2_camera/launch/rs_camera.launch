@@ -39,7 +39,9 @@
 
   <arg name="enable_sync"         default="false"/>
   <arg name="align_depth"         default="false"/>
-
+  <arg name="inter_cam_sync_mode" default="master"/>
+  <arg name="mavros_triggering"   default="false"/>
+  <arg name="kalibr_time_offset"  default="0.0"/>
   <arg name="filters"             default=""/>
 
   <group ns="$(arg camera)">
@@ -82,8 +84,12 @@
       <arg name="gyro_fps"                 value="$(arg gyro_fps)"/>
       <arg name="accel_fps"                value="$(arg accel_fps)"/>
       <arg name="enable_imu"               value="$(arg enable_imu)"/>
-
       <arg name="filters"                  value="$(arg filters)"/>
+
+
+      <arg name="inter_cam_sync_mode"      value="$(arg inter_cam_sync_mode)"/>
+      <arg name="mavros_triggering"        value="$(arg mavros_triggering)"/>
+      <arg name="kalibr_time_offset"       value="$(arg kalibr_time_offset)"/>
     </include>
   </group>
 </launch>
