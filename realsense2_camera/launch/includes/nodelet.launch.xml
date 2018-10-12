@@ -80,9 +80,12 @@
   <arg name="initial_reset"            default="false"/>
   <arg name="unite_imu_method"         default="none"/> <!-- Options are: [none, copy, linear_interpolation] -->
 
+  <arg name="inter_cam_sync_mode"       default="0" />
+  <arg name="hardware_sync_mode"        default="0" />
+  <arg name="static_time_offset"        default="0.0" />
 
   <node pkg="nodelet" type="nodelet" name="$(arg manager)" args="manager" output="screen"/>
-  <node pkg="nodelet" type="nodelet" name="realsense2_camera" args="load realsense2_camera/RealSenseNodeFactory $(arg manager)">
+  <node pkg="nodelet" type="nodelet" name="realsense2_camera" args="load realsense2_camera/RealSenseNodeFactory $(arg manager)" output="screen">
     <param name="serial_no"                type="str"  value="$(arg serial_no)"/>
     <param name="json_file_path"           type="str"  value="$(arg json_file_path)"/>
     <param name="rosbag_filename"          type="str"  value="$(arg rosbag_filename)"/>
@@ -126,6 +129,7 @@
     <param name="infra1_frame_id"          type="str"  value="$(arg infra1_frame_id)"/>
     <param name="infra2_frame_id"          type="str"  value="$(arg infra2_frame_id)"/>
     <param name="color_frame_id"           type="str"  value="$(arg color_frame_id)"/>
+
     <param name="fisheye_frame_id"         type="str"  value="$(arg fisheye_frame_id)"/>
     <param name="fisheye1_frame_id"        type="str"  value="$(arg fisheye1_frame_id)"/>
     <param name="fisheye2_frame_id"        type="str"  value="$(arg fisheye2_frame_id)"/>
@@ -155,11 +159,16 @@
     <param name="topic_odom_in"            type="str"  value="$(arg topic_odom_in)"/>
     <param name="calib_odom_file"          type="str"    value="$(arg calib_odom_file)"/>
     <param name="publish_odom_tf"          type="bool" value="$(arg publish_odom_tf)"/>
+
     <param name="filters"                  type="str"    value="$(arg filters)"/>
     <param name="clip_distance"            type="double" value="$(arg clip_distance)"/>
     <param name="linear_accel_cov"         type="double" value="$(arg linear_accel_cov)"/>
     <param name="initial_reset"            type="bool"   value="$(arg initial_reset)"/>
     <param name="unite_imu_method"         type="str"    value="$(arg unite_imu_method)"/>
+
+    <param name="inter_cam_sync_mode"      type="int"  value="$(arg inter_cam_sync_mode)"/>
+    <param name="hardware_sync_mode"       type="int" value="$(arg hardware_sync_mode)" />
+    <param name="static_time_offset"       type="double" value="$(arg static_time_offset)" />
 
   </node>
 </launch>

@@ -37,6 +37,10 @@
   <arg name="enable_sync"           default="false"/>
   <arg name="align_depth"           default="false"/>
 
+  <arg name="inter_cam_sync_mode"   default="0"/>
+  <arg name="hardware_sync_mode"    default="0"/>
+  <arg name="static_time_offset"    default="0.0"/>
+
   <arg name="filters"               default=""/>
   <arg name="clip_distance"         default="-2"/>
   <arg name="linear_accel_cov"      default="0.01"/>
@@ -93,6 +97,11 @@
       <arg name="topic_odom_in"            value="$(arg topic_odom_in)"/>
       <arg name="calib_odom_file"          value="$(arg calib_odom_file)"/>
       <arg name="publish_odom_tf"          value="$(arg publish_odom_tf)"/>
+
+      <arg name="inter_cam_sync_mode"      value="$(arg inter_cam_sync_mode)"/>
+      <arg name="hardware_sync_mode"       value="$(arg hardware_sync_mode)"/>
+      <arg name="static_time_offset"       value="$(arg static_time_offset)"/>
+
     </include>
   </group>
 </launch>

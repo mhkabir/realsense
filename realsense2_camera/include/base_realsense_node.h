@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../include/mavros_syncer.h"
 #include "../include/realsense_node_factory.h"
 #include <ddynamic_reconfigure/ddynamic_reconfigure.h>
 #include <ddynamic_reconfigure/param/dd_all_params.h>
@@ -258,7 +259,13 @@ namespace realsense2_camera
         std::map<stream_index_pair, sensor_msgs::CameraInfo> _camera_info;
         std::atomic_bool _is_initialized_time_base;
         double _camera_time_base;
+
         std::map<stream_index_pair, std::vector<rs2::stream_profile>> _enabled_profiles;
+
+        int _inter_cam_sync_mode;
+        int _hardware_sync_mode;
+        double _static_time_offset;
+        mavros_syncer::MavrosSyncer<stream_index_pair> _hardware_synchroniser;
 
         ros::Publisher _pointcloud_publisher;
         ros::Time _ros_time_base;

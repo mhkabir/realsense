@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?> 
+<launch>
+
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+        <arg name="enable_color" value="false"/>
+        <arg name="enable_sync" value="false"/>
+
+        <arg name="inter_cam_sync_mode" value="1"/>
+        <arg name="hardware_sync_mode" value="2"/>
+        <arg name="static_time_offset"  value="-0.00335"/>   <!-- time calibration offset from kalibr -->
+    </include>
+
+</launch>

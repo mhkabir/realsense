@@ -38,13 +38,13 @@ namespace realsense2_camera
     const bool ALIGN_DEPTH    = false;
     const bool POINTCLOUD     = false;
     const bool SYNC_FRAMES    = false;
+    const bool MAVROS_TRIGGERING = false;
 
     const int IMAGE_WIDTH     = 640;
     const int IMAGE_HEIGHT    = 480;
     const int IMAGE_FPS       = 30;
 
     const int IMU_FPS         = 0;
-
 
     const bool ENABLE_DEPTH   = true;
     const bool ENABLE_INFRA1  = true;
@@ -55,6 +55,9 @@ namespace realsense2_camera
     const bool HOLD_BACK_IMU_FOR_FRAMES = false;
     const bool PUBLISH_ODOM_TF = true;
 
+    const int INTER_CAM_SYNC_MODE                      = 0;
+    const int HARDWARE_SYNC_MODE                       = 0;
+    const double STATIC_TIME_OFFSET                    = 0.0;
 
     const std::string DEFAULT_BASE_FRAME_ID            = "camera_link";
     const std::string DEFAULT_ODOM_FRAME_ID            = "odom_frame";

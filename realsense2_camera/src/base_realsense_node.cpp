@@ -85,7 +85,8 @@ BaseRealSenseNode::BaseRealSenseNode(ros::NodeHandle& nodeHandle,
     _pnh(privateNodeHandle), _dev(dev), _json_file_path(""),
     _serial_no(serial_no),
     _is_initialized_time_base(false),
-    _namespace(getNamespaceStr())
+    _namespace(getNamespaceStr()),
+    _hardware_synchroniser(std::set<stream_index_pair>({INFRA1}))
 {
     // Types for depth stream
     _image_format[RS2_STREAM_DEPTH] = CV_16UC1;    // CVBridge type
@@ -482,6 +483,19 @@ void BaseRealSenseNode::getParameters()
     _pnh.param("angular_velocity_cov", _angular_velocity_cov, static_cast<double>(0.01));
     _pnh.param("hold_back_imu_for_frames", _hold_back_imu_for_frames, HOLD_BACK_IMU_FOR_FRAMES);
     _pnh.param("publish_odom_tf", _publish_odom_tf, PUBLISH_ODOM_TF);
+
+    // 0 - Disabled
+    // 1 - Master
+    // 2 - Slave
+    _pnh.param("inter_cam_sync_mode", _inter_cam_sync_mode, INTER_CAM_SYNC_MODE);
+
+    // 0 - No hardware synchronisation
+    // 1 - Trigger camera externally
+    // 2 - Capture camera externally
+    _pnh.param("hardware_sync_mode", _hardware_sync_mode, HARDWARE_SYNC_MODE);
+
+    _pnh.param("static_time_offset", _static_time_offset, STATIC_TIME_OFFSET);
+
 }
 
 void BaseRealSenseNode::setupDevice()
@@ -619,6 +633,20 @@ void BaseRealSenseNode::setupDevice()
                 _enable[enable.first] = false;
             }
         }
+
+        // Set Inter-camera synchronisation mode
+        _sensors[DEPTH].set_option(RS2_OPTION_INTER_CAM_SYNC_MODE, _inter_cam_sync_mode);
+        if(_inter_cam_sync_mode == 1) {
+            // Enable output trigger if we are a master camera
+            _sensors[DEPTH].set_option(RS2_OPTION_OUTPUT_TRIGGER_ENABLED, 1);
+            _sensors[DEPTH].set_option(RS2_OPTION_EMITTER_ENABLED, 0);
+            //_sensors[INFRA1].set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 1);
+            //_sensors[INFRA2].set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 1);
+
+            // TODO this can be smart and warn about unsupporte configurations
+        }
+        ROS_INFO_STREAM("Inter cam sync mode set to " << _inter_cam_sync_mode);
+
     }
     catch(const std::exception& ex)
     {
@@ -1085,7 +1113,6 @@ double BaseRealSenseNode::FillImuData_LinearInterpolation(const stream_index_pai
     imu_msg.linear_acceleration.z = accel_data.m_reading.z;
     return that_last_data.m_time;
 }
-
 
 double BaseRealSenseNode::FillImuData_Copy(const stream_index_pair stream_index, const BaseRealSenseNode::CIMUHistory::imuData imu_data, sensor_msgs::Imu& imu_msg)
 {
@@ -1604,6 +1631,38 @@ void BaseRealSenseNode::setupStreams()
                 _depth_scale_meters = sensor.as<rs2::depth_sensor>().get_depth_scale();
             }
         }
+
+        // Setup external hardware synchronization
+        if(_hardware_sync_mode > 0) {
+            // define function to publish restamped frames
+            std::function<void(const stream_index_pair& channel,
+                               const ros::Time& new_stamp,
+                               const sensor_msgs::ImagePtr image,
+                               const sensor_msgs::CameraInfo)> publish_frame_fn = [this](const stream_index_pair& channel,
+                                                                                         const ros::Time& new_stamp,
+                                                                                         const sensor_msgs::ImagePtr img,
+                                                                                         sensor_msgs::CameraInfo info){
+                // restamp frame
+                img->header.stamp = new_stamp;
+                info.header.stamp = new_stamp;
+
+                //publish
+                auto& info_publisher = this->_info_publisher.at(channel);
+                auto& image_publisher = this->_image_publishers.at(channel);
+                info_publisher.publish(info);
+
+                image_publisher.first.publish(img);
+                image_publisher.second->update();
+
+                ROS_DEBUG("%s stream published", rs2_stream_to_string(channel.first));
+            };
+
+            // Setup hardware synchronisation
+            _hardware_synchroniser.setup(publish_frame_fn, _fps[DEPTH], _static_time_offset, _hardware_sync_mode); //TODO feels ugly
+            _hardware_synchroniser.start();
+        }
+
+
     }
     catch(const std::exception& ex)
     {
@@ -2084,20 +2143,38 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
         img->step = width * bpp;
         img->header.frame_id = optical_frame_id.at(stream);
         img->header.stamp = t;
-        img->header.seq = seq[stream];
+        img->header.seq = f.get_frame_number();
 
         auto& cam_info = camera_info.at(stream);
         if (cam_info.width != width)
         {
             updateStreamCalibData(f.get_profile().as<rs2::video_stream_profile>());
         }
-        cam_info.header.stamp = t;
-        cam_info.header.seq = seq[stream];
-        info_publisher.publish(cam_info);
+        cam_info.header.stamp = img->header.stamp;
+        cam_info.header.seq = img->header.seq;
 
-        image_publisher.first.publish(img);
-        image_publisher.second->update();
-        // ROS_INFO_STREAM("fid: " << cam_info.header.seq << ", time: " << std::setprecision (20) << t.toSec());
+        if(_hardware_sync_mode > 0) {
+            // Hardware synchronisation enabled, synchronise and publish
+            double exposure;
+            if(f.supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE)) {
+                exposure = static_cast<double>(f.get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE));
+            } else {
+                ROS_WARN("Frame does not provide exposure metadata. Using fixed exposure offset for timestamp...");
+                exposure = _sensors[DEPTH].get_option(RS2_OPTION_EXPOSURE); // TODO : INFRA1?
+            }
+
+            // /ros::spinOnce();
+
+            // Match and publish frame
+            _hardware_synchroniser.matchEvent(stream, f.get_frame_number(), t, exposure, img, cam_info);
+
+        } else {
+            // No hardware synchronisation, just publish
+            info_publisher.publish(cam_info);
+            image_publisher.first.publish(img);
+            image_publisher.second->update();
+        }
+
         ROS_DEBUG("%s stream published", rs2_stream_to_string(f.get_profile().stream_type()));
     }
 }
