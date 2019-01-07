@@ -2,10 +2,12 @@
 #define REALSENSE2_CAMERA_MAVROS_SYNCER_H
 
 #include "ros/ros.h"
+#include <ros/callback_queue.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/CameraInfo.h>
 #include <mavros_msgs/CamIMUStamp.h>
 #include <mavros_msgs/CommandTriggerControl.h>
 #include <mavros_msgs/CommandTriggerInterval.h>
-#include <geometry_msgs/PointStamped.h>
 #include <mutex>
 #include <tuple>
 
@@ -16,62 +18,87 @@
 
 namespace mavros_syncer {
 
-template<typename t_channel_id, typename t_cache>
+template<typename t_channel_id>
 class MavrosSyncer {
-    // callback definition for processing buffered frames
+    // Callback definition for publishing synchronised frames
     typedef boost::function<void(const t_channel_id &channel,
-                                 const ros::Time &new_stamp,
-                                 const std::shared_ptr<t_cache> &cal)> caching_callback;
+                                 const ros::Time &stamp,
+                                 const sensor_msgs::ImagePtr &frame,
+                                 const sensor_msgs::CameraInfo &cinfo)> publish_callback;
 
-    // internal representation of a buffered frame
-    // t_cache is the external representation
+    // Internal representation of a frame
     typedef struct {
+
+        bool valid;
+
+        // Frame sequence number from camera
         uint32_t seq;
-        ros::Time old_stamp;
-        ros::Time arrival_stamp;
-        std::shared_ptr<t_cache> frame;
-        double exposure;
-    } frame_buffer_type;
+        
+        // Timestamp of frame (translated to ROS timebase)
+        ros::Time frame_stamp;
+
+        // Frame and metadata
+        sensor_msgs::ImagePtr frame;
+        sensor_msgs::CameraInfo cinfo;
+        double exposure; // Exposure time in us
+
+        void reset() {
+            valid = false;
+        }
+
+    } frame_t;
+
+    // Internal representation of a hardware event
+    typedef struct {
+
+        bool valid;
+
+        // Frame sequence number from hardware
+        uint32_t seq;
+        
+        // Timestamp of event (translated to ROS timebase)
+        ros::Time event_stamp;
+
+        void reset() {
+            valid = false;
+        }
+
+    } event_t;
 
  public:
 
-    enum SyncMode {
-        None = 0,
-        Trigger,
-        Capture,
-    };
-
-    // TODO
-    enum SyncState {
-        Uninitialised = 0,
-        WaitForSync,        // Waiting to receive trigger/capture events
-        Synchronised,       // Currently in synchronisation
-    };
-
     MavrosSyncer(const std::set<t_channel_id> &channel_set) :
-            channel_set_(channel_set),
-            state_(SyncState::Uninitialised) {
-        ROS_DEBUG_STREAM(log_prefix_ << " Initialized with " << channel_set_.size() << " channels.");
-        for (t_channel_id id : channel_set_) {
-            trigger_buffer_[id].clear();
-        }
+            _channel_set(channel_set),
+            _state(SyncState::Uninitialised) {
+        ROS_DEBUG_STREAM(_log_prefix << " Initialized with " << _channel_set.size() << " channels.");
+        for (t_channel_id channel : _channel_set) {
+            _event_buffer[channel].reset();
+            _frame_buffer[channel].reset();
+            _sequence_offset[channel] = 2;
+        } // TODO : better init EVERYTHING with zeros in constructor list
     }
 
-    void setup(const caching_callback &callback, int fps, double time_offset, int sync_mode) {
+    void setup(const publish_callback &callback, int fps, double time_offset, int sync_mode) {
 
-        sync_mode_ = sync_mode;
-        sequence_offset_ = 0;
-        time_offset_ = time_offset;
-        state_ = SyncState::Uninitialised;
-        restamp_callback_ = callback;
+        _nh.setCallbackQueue(&_trigger_queue);
 
-        camera_event_sub_ = nh_.subscribe("/mavros/cam_imu_sync/cam_imu_stamp", 100,
-                                     &MavrosSyncer::cameraEventCallback, this);
+        _state = SyncState::Uninitialised;
+        _mode = SyncMode(sync_mode);
+
+        // _sequence_offset = 0;
+        _time_offset = time_offset;
+
+        _publish_callback = callback;
+
+        _max_time_delta = 1.0/fps;
+
+        _hardware_event_sub = _nh.subscribe("/mavros/cam_imu_sync/cam_imu_stamp", 2,
+                                     &MavrosSyncer::hardwareEventCallback, this, ros::TransportHints().udp());
 
         const std::string mavros_trig_control_srv = "/mavros/cmd/trigger_control";
         const std::string mavros_trig_interval_srv = "/mavros/cmd/trigger_interval";
 
-        if (mode_ == SyncMode::Trigger) {
+        //if (_mode == SyncMode::Trigger) {
             // Set up external camera triggering
             if (ros::service::exists(mavros_trig_control_srv, false) && 
                 ros::service::exists(mavros_trig_interval_srv, false)) {
@@ -83,37 +110,30 @@ class MavrosSyncer {
                 req_control.request.trigger_pause = false;
                 ros::service::call(mavros_trig_control_srv, req_control);
 
-                // Set trigger cycle time
+                // Set trigger cycle time 
+                /*
                 mavros_msgs::CommandTriggerInterval req_interval;
                 req_interval.request.cycle_time = 1000.0/fps;
                 req_interval.request.integration_time = -1.0;
                 ros::service::call(mavros_trig_interval_srv, req_interval);
 
                 ROS_INFO("Set mavros trigger interval to %f! Success? %d Result? %d",
-                                 1000.0/fps, req_interval.response.success, req_interval.response.result);
+                                 1000.0/fps, req_interval.response.success, req_interval.response.result);*/
             } else {
                 ROS_ERROR("Camera trigger setup services not available!");
             }
-        }
+        //}
     }
 
     void start() {
-        std::lock_guard<std::mutex> lg(mutex_);
 
-        if (state_ != SyncState::Uninitialized) {
-            // Already started, ignore
-            return;
-        }
-
-        for (t_channel_id id : channel_set_) {
-            // Clear buffers in case we are re-initialising
-            trigger_buffer_[id].clear();
-            frame_buffer_[id].frame.reset(); // TODO better way? clear whole buffer?
+        if (!_publish_callback) {
+            ROS_ERROR_STREAM(_log_prefix << " No publish callback set - discarding buffered images.");
         }
 
         // Reset sequence number and enable triggering
-        sequence_offset_ = 0;
-        if (inter_cam_sync_mode_ == 2) { 
+        // _sequence_offset = 0; TODO
+        /// if (_mode == SyncMode::Trigger) { 
             const std::string mavros_trig_control_srv = "/mavros/cmd/trigger_control";
             mavros_msgs::CommandTriggerControl req_enable;
             req_enable.request.trigger_enable = true;
@@ -121,269 +141,389 @@ class MavrosSyncer {
             req_enable.request.trigger_pause = false;
             ros::service::call(mavros_trig_control_srv, req_enable);
 
-            ROS_INFO_STREAM(log_prefix_ << " Started triggering.");
+            ROS_INFO_STREAM(_log_prefix << " Started triggering.");
 
-            ros::Duration(1.0).sleep(); // wait for the realsense to align its exposure to the external triggering
-        }
+            // TODO : needed?
+            // Wait for the camera to align its exposure to hardware trigger
+            // /ros::Duration(1.0).sleep();
+        //}
 
-        state_ = WaitForSync;
+        _trigger_queue.callAvailable(ros::WallDuration(0.9*_max_time_delta));
+
+        _state = SyncState::WaitForSync;
     }
 
     bool channelValid(const t_channel_id &channel) const {
-        return channel_set_.count(channel) == 1;
+        return _channel_set.count(channel) == 1;
     }
 
-    void cacheFrame(const t_channel_id &channel, const uint32_t seq, const ros::Time &original_stamp, double exposure,
-                                    const std::shared_ptr<t_cache> frame) {
+    /*
+    void bufferFrame(const t_channel_id &channel, const uint32_t seq, 
+                     const ros::Time &frame_stamp, double exposure,
+                     const sensor_msgs::ImagePtr frame, const sensor_msgs::CameraInfo cinfo) { // TODO : pass refs here, not copy
 
         if (!channelValid(channel)) {
-            ROS_WARN_STREAM_ONCE(log_prefix_ << "cacheFrame called for invalid channel.");
+            ROS_WARN_STREAM(_log_prefix << "bufferFrame called for invalid channel.");
             return;
         }
 
-        if(frame_buffer_[channel].frame){
-            // TODO : this runs the publisher?
-            ros::spinOnce();
-        }
-
-        if (frame_buffer_[channel].frame) {
-            ROS_WARN_STREAM_THROTTLE(1, log_prefix_ << 
-                "Overwriting image buffer! Make sure you're getting Timestamps from mavros.");
-            // commented so that frames are only published if they were matched to a valid stamp
-            // restamp_callback_(channel, frame_buffer_[channel].old_stamp, frame_buffer_[channel].frame);
+        if (_frame_buffer[channel].valid) {
+            ROS_WARN_STREAM(_log_prefix << 
+                "Overwriting image buffer! Make sure you're getting hardware events.");
         }
 
         // Buffer the frame
-        frame_buffer_[channel].frame = frame;
-        frame_buffer_[channel].old_stamp = original_stamp; //store stamp that was reconstructed by ros-realsense
-        frame_buffer_[channel].arrival_stamp = ros::Time::now();
-        frame_buffer_[channel].seq = seq; // TODO : where this from?
-        frame_buffer_[channel].exposure = exposure;
-        ROS_DEBUG_STREAM(log_prefix_ << "Buffered frame, seq: " << seq);
-    }
+        _frame_buffer[channel].valid = true;
+        _frame_buffer[channel].seq = seq;
+        _frame_buffer[channel].frame_stamp = frame_stamp;
+        _frame_buffer[channel].frame = frame;
+        _frame_buffer[channel].cinfo = cinfo;
+        _frame_buffer[channel].exposure = exposure;
 
-    bool syncOffset(const t_channel_id &channel, const uint32_t seq, const ros::Time &old_stamp) {
-        // no lock_guard as this function is only called within locked scopes
+        ROS_DEBUG_STREAM(_log_prefix << "Buffered frame, seq: " << seq);
+    }*/
 
-        // Get the first from the sequence time map.
-        auto it = trigger_buffer_[channel].rbegin();
-        int32_t mavros_sequence = it->first;
-
-        // Get offset between first frame sequence and mavros
-        sequence_offset_ = mavros_sequence - static_cast<int32_t>(seq);
-
-        double delay = old_stamp.toSec() - it->second.toSec();
-
-
-        ROS_INFO(
-                "%sNew header offset determined for channel %i: %d, from %d to %d, timestamp "
-                "correction: %f seconds.",
-                log_prefix_.c_str(), channel.first,
-                sequence_offset_, it->first, seq,
-                delay);
-
-        frame_buffer_[channel].frame.reset();
-        trigger_buffer_[channel].clear();
-
-        state_ = synced;
-        return true;
-
-    }
-
-    // Match an incoming frame to a buffered hardware event (trigger/capture) TODO misleading name?
-    bool lookupEvent(const t_channel_id &channel, const uint32_t frame_seq,
-                            const ros::Time &old_stamp, double exposure, 
-                            ros::Time *new_stamp) {
-        std::lock_guard<std::mutex> lg(mutex_);
+    void bufferEvent(const t_channel_id &channel, const uint32_t seq, 
+                    const ros::Time &event_stamp) {
 
         if (!channelValid(channel)) {
-            return false;
+            ROS_WARN_STREAM(_log_prefix << "bufferEvent called for invalid channel.");
+            return;
         }
 
-        ROS_INFO_STREAM(log_prefix_ << "Received frame with stamp: " <<
-                        std::setprecision(15) <<
-                        old_stamp.toSec() << 
-                        " rn: " << ros::Time::now().toSec() <<
-                        ", for seq nr: " << frame_seq <<
-                        ", syncState: " << state_);
-
-        if (state_ == SyncState::Uninitialised) {
-            return false;
+        const double event_age = ros::Time::now().toSec() - event_stamp.toSec();
+        if (event_age < 0.0) {
+            ROS_WARN_STREAM(_log_prefix << 
+                    "Negative event age! Check time synchronisation.");
+            return;
         }
 
-        if (trigger_buffer_[channel].empty()) {
-            return false;
+        if (_event_buffer[channel].valid) {
+            ROS_WARN_STREAM(_log_prefix << 
+                    "Overwriting event buffer! Make sure you're getting frames.");
         }
 
-        const double kMaxExpectedDelay = 10e-3;
-        const double age_cached_trigger = old_stamp.toSec() - trigger_buffer_[channel].rbegin()->second.toSec();
-        
-        if (std::fabs(age_cached_trigger) > kMaxExpectedDelay) {
-            ROS_WARN_STREAM(log_prefix_ << "Delay out of bounds: "
-                                            << kMaxExpectedDelay << " seconds. Clearing trigger buffer...");
-            frame_buffer_[channel].frame.reset();
-            trigger_buffer_[channel].clear();
-            state_ = wait_for_sync;
-            return false;
-        }
+        // Buffer the event
+        _event_buffer[channel].valid = true;
+        _event_buffer[channel].seq = seq;
+        _event_buffer[channel].event_stamp = event_stamp;
 
-        if (state_ == wait_for_sync) {
-            syncOffset(channel, frame_seq, old_stamp);
-            return false;
-        }
+         const double event_dt = event_stamp.toSec() - _last_event_stamp.toSec();
+        _last_event_stamp = event_stamp;
 
-        uint32_t trigger_seq = frame_seq + sequence_offset_;
-        auto it = trigger_buffer_[channel].find(trigger_seq);
-
-        // if we haven't found a matching stamp
-        if (it == trigger_buffer_[channel].end()) {
-            // cached trigger is within the expected delay but does not match the expected seq nr
-            // call syncOffset()
-            ROS_WARN_STREAM(log_prefix_ << "Could not find trigger for seq: " <<  trigger_seq);
-            syncOffset(channel, frame_seq, old_stamp);
-            return false;
-        }
-
-        *new_stamp = it->second;
-        *new_stamp = shiftTimestampToMidExposure(*new_stamp, exposure);
-        trigger_buffer_[channel].clear();
-
-        const double delay = age_cached_trigger;
-        ROS_INFO_STREAM(log_prefix_ << "Matched frame to trigger: t" << trigger_seq << " -> c" << frame_seq <<
-                        ", t_old " <<  std::setprecision(15) << old_stamp.toSec() << " -> t_new " << new_stamp->toSec() 
-                        << std::setprecision(7) << " ~ " << delay);
-
-        return true;
+        ROS_INFO_STREAM(_log_prefix << "Buffered event, seq: " << seq << " dt: " << event_dt << " age: " << event_age * 1000.0 << " ms");
     }
 
+    void computeSequenceOffset(const t_channel_id &channel, const uint32_t event_seq, const uint32_t frame_seq, const double dt) {
+
+        // Calculate offset between current hardware and camera sequence numbers
+        _sequence_offset[channel] = int32_t(event_seq) - int32_t(frame_seq); // TODO : this has potential to overflow in the future
+
+        // Between hardware stamp and camera stamp
+        ROS_WARN_STREAM("Event age : " << dt * 1000.0 << " ms");
+
+        /*
+        if(fabs(dt) > 0.015) {
+            ROS_ERROR("applying offset correction");
+            _sequence_offset[channel]++;
+        }*/
+
+        ROS_INFO_STREAM(_log_prefix << 
+                "New seq offset determined by channel " << channel.first << ": " << _sequence_offset[channel] << 
+                ", from " << event_seq << " to " << frame_seq);
+
+        _state = SyncState::Synchronised;
+
+    }
+
+    // Match an image frame to a buffered hardware event and publish it
+    void matchEvent(const t_channel_id &channel, const uint32_t frame_seq,
+                            const ros::Time &frame_stamp, double exposure, 
+                            const sensor_msgs::ImagePtr img, const sensor_msgs::CameraInfo cinfo) {
+
+        //if(frame_seq % 400 == 0) {
+        //    ROS_ERROR("simulating frame drop");
+        //    return;
+        //}
+
+        std::lock_guard<std::mutex> lg(_mutex);
+
+        if (!channelValid(channel)) {
+            ROS_WARN_STREAM(_log_prefix << "matchEvent called for invalid channel.");
+            return;
+        }
+
+        if (_state == SyncState::Uninitialised) {
+            ROS_ERROR("Uninitialised");
+            return;
+        }
+
+        const double frame_dt = frame_stamp.toSec() - _last_frame_stamp.toSec();
+        _last_frame_stamp = frame_stamp;
+
+        ROS_INFO_STREAM(_log_prefix << std::setprecision(15) << 
+                        "Received frame, dt: " << frame_dt * 1000.0 <<
+                        ", seq : " << frame_seq);
+
+
+        // Detect frame drops
+        if(frame_seq != _last_frame_seq + 1 && frame_seq != 0) {
+            ROS_WARN("Detected frame drop");
+            // If the previous frame was dropped, 
+            // then we do not have the corresponding event for this frame either. 
+
+            // Abort and grab next event for next frame
+            _trigger_queue.callOne();
+            _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta));
+            _last_frame_seq = frame_seq;
+            return;
+        }
+        _last_frame_seq = frame_seq;
+
+        // If the event buffer is empty, we've definitely dropped the event corresponding to this frame
+        if (!_event_buffer[channel].valid) {
+            ROS_ERROR("event buffer empty");
+            // Grab next event
+            _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : this wait is bad?
+
+            //getEvent(false, 0.8 * _max_time_delta);
+            //bufferFrame(channel, frame_seq, frame_stamp, exposure, img, cinfo);
+            return;
+        }
+        
+        // This should be approximately 1/fps + 2ms
+        double event_age = ros::Time::now().toSec() - _event_buffer[channel].event_stamp.toSec();
+        ROS_WARN("Event age at image callback : %f ms", event_age * 1000.0);
+
+        if(event_age > 1.9*_max_time_delta) { 
+            ROS_ERROR("Delay high, clear buffer : %f ms", event_age * 1000.0);
+            _event_buffer[channel].reset();
+            //getEvent(true, 0.8 * _max_time_delta);
+            //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : this doesn't actually wait if there is one in the buffer
+            //_trigger_queue.callAvailable(ros::WallDuration(0.8 * _max_time_delta)); // TODO : this doesn't actually wait if there is one in the buffer
+            _trigger_queue.callOne();
+            _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta));
+
+            // known issue : sometimes 2 events arrive right after each other (previous one was delayed??)
+            // and the second callOne gets it, overwriting the "needed" one. This then causes an incorrect sequence detection
+            // Maybe we shouldn't try to compute here? Or maybe try to use the age and dt of events?
+            // TODO : also a possibility when there is frame drop, but that is handled as a special case where there *should* 
+            // be 2 events one after the other.
+            _state = SyncState::WaitForSync;
+            return;
+        }
+
+        if(event_age < 0.8*_max_time_delta) {
+            ROS_ERROR("Received event early : %f ms", event_age * 1000.0);
+            _state = SyncState::WaitForSync;
+            return;
+        }
+
+        // Check for inter-frame time deltas to detect drops
+        /*
+        if (std::fabs(frame_dt) > _max_time_delta) {
+            ROS_WARN_STREAM(_log_prefix << "Frame delta out of bounds: "
+                                            << frame_dt << " seconds. Resetting synchroniser.");
+            //_event_buffer[channel].reset();
+            _state = SyncState::WaitForSync;
+            //computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq);
+            //return; // TODO : should we return here?
+        }
+
+        if (_state == SyncState::WaitForSync) {
+            computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq, sync_dt);
+        }*/
+
+        uint32_t expected_event_seq = frame_seq + _sequence_offset[channel]; // TODO : fix dis
+        if (_state == SyncState::WaitForSync || _event_buffer[channel].seq != expected_event_seq) {
+            if(_event_buffer[channel].seq != expected_event_seq) {
+                ROS_ERROR_STREAM(_log_prefix << "expected: " << expected_event_seq << " in ev buffer: " << _event_buffer[channel].seq);
+                computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq, event_age);
+                _event_buffer[channel].reset();
+                _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); 
+                return;
+            }
+            _state = SyncState::Synchronised;
+        }
+
+        // Successfully matched frame and event, publish it 
+        // Correct timestamp for exposure time and static offset
+        ros::Time corrected_stamp = correctTimestamp(_event_buffer[channel].event_stamp, 
+                                                    exposure); // TODO make this more efficient
+
+        _publish_callback(channel, corrected_stamp, img, cinfo);
+    
+        ROS_INFO_STREAM(_log_prefix << "frame#" << frame_seq << " -> stamp#" << expected_event_seq);
+
+        // Clear event buffer after successful publish
+        _event_buffer[channel].reset();
+
+        // Grab next event
+        _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : needs to be re-thought for multiple channels
+        //getEvent(false, 0.8 * _max_time_delta);
+    }
 
     // Function to match an incoming hardware event (trigger/capture) to a buffered frame
-    // Return true to publish frame, return false to buffer frame
-    bool lookupFrame(const t_channel_id &channel, const uint32_t trigger_seq, 
-                     ros::Time new_stamp, const ros::Time &old_stamp) {
+    /*
+    void matchFrame(const uint32_t event_seq, const ros::Time &event_stamp) {
 
-        if (state_ == wait_for_sync) {
-            return false; // do nothing if seq offset is not yet determined
+        std::lock_guard<std::mutex> lg(_mutex);
+
+        if (_state == SyncState::Uninitialised) {
+            ROS_ERROR("Uninitialised");
+            return;
         }
 
-        uint32_t synced_seq = trigger_seq - sequence_offset_;
-        if (frame_buffer_[channel].seq != synced_seq) {
-            // cached frame is within the expected delay but does not match the expected seq nr
-            // return false in order to call syncOffset()
-            ROS_WARN_STREAM(log_prefix_ << "Could not find frame for seq: " << synced_seq);
-            return  false;
+        const double event_dt = event_stamp.toSec() - _last_event_stamp.toSec();
+        _last_event_stamp = event_stamp;
+
+        // Match frame across all channels
+        for (auto channel : _channel_set) {
+
+            ROS_INFO_STREAM(_log_prefix << "Received event, dt : " <<
+               event_dt <<
+                ", with seq : " << event_seq <<
+                " (synced_seq: " << event_seq - _sequence_offset[channel] << ")");
+
+             if (!_frame_buffer[channel].valid) {
+                // Empty frame buffer, buffer timestamp
+                ROS_ERROR("frame buffer empty"); // expected
+                bufferEvent(channel, event_seq, event_stamp);
+                continue;
+            }
+
+            double sync_dt = _frame_buffer[channel].frame_stamp.toSec() - event_stamp.toSec();
+
+            if(std::fabs(sync_dt) > 0.015) { 
+                ROS_ERROR("sync dt high, reset");
+                _state = SyncState::WaitForSync;
+            }
+
+            // Check for inter-event time deltas to detect drops
+            if (std::fabs(event_dt) > _max_time_delta) {
+                ROS_WARN_STREAM(_log_prefix << "Event delta out of bounds: "
+                                                << event_dt << " seconds. Resetting synchroniser.");
+                _state = SyncState::WaitForSync;
+                
+            }
+
+            if (_state == SyncState::WaitForSync) {
+                computeSequenceOffset(channel, event_seq, _frame_buffer[channel].seq, sync_dt);
+                //computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq);
+            }
+
+            // TODO : only trust this if NOT WaitForSync
+            uint32_t expected_frame_seq = event_seq - _sequence_offset[channel]; // TODO : fix dis
+            if (_frame_buffer[channel].seq != expected_frame_seq) {
+                ROS_ERROR_STREAM(_log_prefix << "expected: " << expected_frame_seq << " in frame buffer: " << _frame_buffer[channel].seq);
+                //computeSequenceOffset(channel, frame_seq);
+                continue;
+            }
+
+            ros::Time corrected_stamp = correctTimestamp(event_stamp, _frame_buffer[channel].exposure); // TODO make this more efficient
+
+            _publish_callback(channel, corrected_stamp, _frame_buffer[channel].frame, _frame_buffer[channel].cinfo);
+
+            ROS_INFO_STREAM(_log_prefix << "stamp#" << event_seq << " -> frame#" << expected_frame_seq);
+
+            // Clear frame buffer after successful publish
+            _frame_buffer[channel].reset();
+
         }
 
-        if (!restamp_callback_) {
-            ROS_WARN_STREAM_THROTTLE(10, log_prefix_ << " No callback set - discarding buffered images.");
-            frame_buffer_[channel].frame.reset();
-            return false;
+    }*/
+
+    void getEvent(bool get_all, double wait_time) {
+
+        if(ros::Time::now().toSec() - _last_event_stamp.toSec() < _max_time_delta) {
+            // Already grabbed this event for a different channel
+            ROS_WARN("already grabbed event");
+            return;
         }
 
-        // successfully matched frame to cached trigger
-        new_stamp = shiftTimestampToMidExposure(new_stamp, frame_buffer_[channel].exposure);
-        restamp_callback_(channel, new_stamp, frame_buffer_[channel].frame);
-        
-        // calc delay between mavros stamp and frame stamp
-        const double delay = old_stamp.toSec() - new_stamp.toSec();
-        ROS_INFO_STREAM(log_prefix_ << "Matched trigger to frame: t" << trigger_seq << " -> c" << synced_seq <<
-                        ", t_old " <<  std::setprecision(15) << old_stamp.toSec() << " -> t_new " << new_stamp.toSec() 
-                        << std::setprecision(7) << " ~ " << delay);
-
-        geometry_msgs::PointStamped msg;
-        msg.header.stamp = new_stamp;
-        msg.point.x = delay;
-        delay_pub_.publish(msg);
-        frame_buffer_[channel].frame.reset();
-
-        return true;
+        if(get_all) {
+            if(wait_time > 0.0) {
+                //ros::Duration(wait_time).sleep();
+                _trigger_queue.callAvailable(ros::WallDuration(wait_time));
+            }
+        } else {
+            _trigger_queue.callOne(ros::WallDuration(wait_time));
+        }
     }
 
-    ros::Time shiftTimestampToMidExposure(const ros::Time &stamp, double exposure_us) {
+    ros::Time correctTimestamp(const ros::Time &stamp, double exposure_us) {
         ros::Time new_stamp = stamp
-                            + ros::Duration(exposure_us * 1e-6 / 2.0)
-                            + ros::Duration(time_offset_ * 1e-3); // TODO check
-        ROS_DEBUG_STREAM(log_prefix_ << "Shift timestamp: " << stamp.toSec() << " -> " << new_stamp.toSec() << " exposure: " << exposure_us * 1e-6);
+                            - ros::Duration(exposure_us * 1e-6 / 2.0)   // Subtract half of exposure time
+                            + ros::Duration(_time_offset);              // Add static time offset
+        ROS_DEBUG_STREAM(_log_prefix << "Shift timestamp: " << stamp.toSec() << " -> " << new_stamp.toSec() << " exposure: " << exposure_us * 1e-6);
         return new_stamp;
     }
 
-    void cameraEventCallback(const mavros_msgs::CamIMUStamp &cam_imu_stamp) {
+    void hardwareEventCallback(const mavros_msgs::CamIMUStamp &hardware_event) {
 
-        if (state_ == SyncState::Uninitialised) {
+        //if(frame_seq % 300 == 0) {
+        //    ROS_ERROR("simulating event drop");
+        //    return;
+        //}
+
+        if (_state == SyncState::Uninitialised) {
             // Do nothing before setup and initialization
             ROS_ERROR("Received hardware events before init");
             return;
         }
 
-        ROS_INFO_STREAM(log_prefix_ << "Received camera event stamp : " <<
-                std::setprecision(15) <<
-                cam_imu_stamp.frame_stamp.toSec() <<
-                " rn: " << ros::Time::now().toSec() <<
-                ", for seq nr: " << cam_imu_stamp.frame_seq_id <<
-                " (synced_seq: " << cam_imu_stamp.frame_seq_id-sequence_offset_ << ")");
-
-        for (auto channel : channel_set_) {
-
-            if (!frame_buffer_[channel].frame) {
-                // buffer stamp if there is no buffered frame
-                trigger_buffer_[channel][cam_imu_stamp.frame_seq_id] = cam_imu_stamp.frame_stamp;
-                return;
-            }
-
-            const double kMaxExpectedDelay = 20e-3;
-            const double age_cached_frame = cam_imu_stamp.frame_stamp.toSec() - frame_buffer_[channel].arrival_stamp.toSec();
-            
-            if (std::fabs(age_cached_frame) > kMaxExpectedDelay) {
-                // buffered frame is too old. release buffered frame
-                ROS_WARN_STREAM(log_prefix_ << "Delay out of bounds:  "
-                                << kMaxExpectedDelay << " seconds. Releasing buffered frame...");
-                frame_buffer_[channel].frame.reset();
-                trigger_buffer_[channel].clear();
-                trigger_buffer_[channel][cam_imu_stamp.frame_seq_id] = cam_imu_stamp.frame_stamp;
-                return;
-            }
-
-            if (!lookupFrame(channel, cam_imu_stamp.frame_seq_id, 
-                             cam_imu_stamp.frame_stamp, frame_buffer_[channel].old_stamp)) {
-                // lookupFrame() returns false:
-                // waiting for sync or
-                // OR 
-                // seq numbers did not match: sync offsets
-                trigger_buffer_[channel][cam_imu_stamp.frame_seq_id] = cam_imu_stamp.frame_stamp;
-                syncOffset(channel, frame_buffer_[channel].seq, frame_buffer_[channel].old_stamp);
-                return;
-            }
-
-            // synced: matched, re-stamped and published frame
+        for (auto channel : _channel_set) {
+            bufferEvent(channel, hardware_event.frame_seq_id, hardware_event.frame_stamp);
         }
-        return;
+
+        //matchFrame(hardware_event.frame_seq_id, hardware_event.frame_stamp);
     }
 
  private:
-    ros::NodeHandle nh_;
+    ros::NodeHandle _nh;
 
-    const std::set<t_channel_id> channel_set_;
+    ros::CallbackQueue _trigger_queue;
 
-    int sequence_offset_;
-    double time_offset_;
+    const std::set<t_channel_id> _channel_set;
 
-    ros::Subscriber camera_event_sub_;
-    ros::Publisher delay_pub_;
-    std::mutex mutex_;
+    std::map<t_channel_id, int32_t> _sequence_offset;
+    double _time_offset;
 
-    caching_callback restamp_callback_;
+    double _max_time_delta;
+
+    ros::Subscriber _hardware_event_sub;
+
+    std::mutex _mutex;
+
+    publish_callback _publish_callback;
+
+    ros::Time _last_frame_stamp;
+    ros::Time _last_event_stamp;
+    uint32_t _last_frame_seq;
+    uint32_t _last_event_seq;
+
+    enum class SyncMode {
+        None,
+        Trigger,
+        Capture,
+    };
+
+    // TODO
+    enum class SyncState {
+        Uninitialised,
+        WaitForSync,        // Waiting to receive trigger/capture events
+        Synchronised,       // Currently in synchronisation
+    };
 
     // Synchronisation state
-    SyncMode mode_;
-    SyncState state_;
+    SyncMode _mode;
+    SyncState _state;
 
-    //std::map<t_channel_id, std::string> logging_name_;
+    // Synchronisation buffer
+    std::map<t_channel_id, event_t> _event_buffer;
+    std::map<t_channel_id, frame_t> _frame_buffer;
 
-    // Synchronisation buffers
-    std::map<t_channel_id, std::map<uint32_t, ros::Time>> trigger_buffer_;
-    std::map<t_channel_id, frame_buffer_type> frame_buffer_;
-
-    const std::string log_prefix_ = "[Mavros Triggering] ";
+    const std::string _log_prefix = "[Hardware Sync] ";
 };
 
 }

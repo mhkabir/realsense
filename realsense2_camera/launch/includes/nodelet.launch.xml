@@ -74,7 +74,7 @@
 
   <arg name="inter_cam_sync_mode"       default="0" />
   <arg name="hardware_sync_mode"        default="0" />
-  <arg name="kalibr_time_offset"        default="0.0" />
+  <arg name="static_time_offset"        default="0.0" />
 
   <node pkg="nodelet" type="nodelet" name="$(arg manager)" args="manager" output="screen"/>
   <node pkg="nodelet" type="nodelet" name="realsense2_camera" args="load realsense2_camera/RealSenseNodeFactory $(arg manager)" output="screen">
@@ -143,7 +143,7 @@
 
     <param name="inter_cam_sync_mode"      type="int"  value="$(arg inter_cam_sync_mode)"/>
     <param name="hardware_sync_mode"       type="int" value="$(arg hardware_sync_mode)" />
-    <param name="kalibr_time_offset"       type="double" value="$(arg kalibr_time_offset)" />
+    <param name="static_time_offset"       type="double" value="$(arg static_time_offset)" />
 
   </node>
 </launch>

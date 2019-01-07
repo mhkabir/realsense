@@ -72,7 +72,7 @@ namespace realsense2_camera
 
     const int INTER_CAM_SYNC_MODE                      = 0;
     const int HARDWARE_SYNC_MODE                       = 0;
-    const double KALIBR_TIME_OFFSET                    = 0.0;
+    const double STATIC_TIME_OFFSET                    = 0.0;
 
     const std::string DEFAULT_BASE_FRAME_ID            = "camera_link";
     const std::string DEFAULT_DEPTH_FRAME_ID           = "camera_depth_frame";
