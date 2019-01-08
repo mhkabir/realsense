@@ -74,7 +74,7 @@ class MavrosSyncer {
         for (t_channel_id channel : _channel_set) {
             _event_buffer[channel].reset();
             _frame_buffer[channel].reset();
-            _sequence_offset[channel] = 2;
+            _sequence_offset[channel] = 1;
         } // TODO : better init EVERYTHING with zeros in constructor list
     }
 
@@ -267,6 +267,7 @@ class MavrosSyncer {
 
 
         // Detect frame drops
+        /*
         if(frame_seq != _last_frame_seq + 1 && frame_seq != 0) {
             ROS_WARN("Detected frame drop");
             // If the previous frame was dropped, 
@@ -278,31 +279,27 @@ class MavrosSyncer {
             _last_frame_seq = frame_seq;
             return;
         }
-        _last_frame_seq = frame_seq;
+        _last_frame_seq = frame_seq;*/
 
-        // If the event buffer is empty, we've definitely dropped the event corresponding to this frame
         if (!_event_buffer[channel].valid) {
-            ROS_ERROR("event buffer empty");
-            // Grab next event
-            _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : this wait is bad?
-
-            //getEvent(false, 0.8 * _max_time_delta);
-            //bufferFrame(channel, frame_seq, frame_stamp, exposure, img, cinfo);
-            return;
+            ROS_WARN("wait for event");
+            // Grab this event
+            _trigger_queue.callAvailable(ros::WallDuration(0.8*_max_time_delta)); // TODO : this wait is bad?
         }
         
-        // This should be approximately 1/fps + 2ms
+        // This should be approximately 2ms
         double event_age = ros::Time::now().toSec() - _event_buffer[channel].event_stamp.toSec();
         ROS_WARN("Event age at image callback : %f ms", event_age * 1000.0);
 
-        if(event_age > 1.9*_max_time_delta) { 
+        if(event_age > 0.9*_max_time_delta) { 
             ROS_ERROR("Delay high, clear buffer : %f ms", event_age * 1000.0);
             _event_buffer[channel].reset();
+            _trigger_queue.clear();
             //getEvent(true, 0.8 * _max_time_delta);
             //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : this doesn't actually wait if there is one in the buffer
             //_trigger_queue.callAvailable(ros::WallDuration(0.8 * _max_time_delta)); // TODO : this doesn't actually wait if there is one in the buffer
-            _trigger_queue.callOne();
-            _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta));
+            //_trigger_queue.callOne();
+            //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta));
 
             // known issue : sometimes 2 events arrive right after each other (previous one was delayed??)
             // and the second callOne gets it, overwriting the "needed" one. This then causes an incorrect sequence detection
@@ -313,25 +310,11 @@ class MavrosSyncer {
             return;
         }
 
+        /*
         if(event_age < 0.8*_max_time_delta) {
             ROS_ERROR("Received event early : %f ms", event_age * 1000.0);
             _state = SyncState::WaitForSync;
             return;
-        }
-
-        // Check for inter-frame time deltas to detect drops
-        /*
-        if (std::fabs(frame_dt) > _max_time_delta) {
-            ROS_WARN_STREAM(_log_prefix << "Frame delta out of bounds: "
-                                            << frame_dt << " seconds. Resetting synchroniser.");
-            //_event_buffer[channel].reset();
-            _state = SyncState::WaitForSync;
-            //computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq);
-            //return; // TODO : should we return here?
-        }
-
-        if (_state == SyncState::WaitForSync) {
-            computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq, sync_dt);
         }*/
 
         uint32_t expected_event_seq = frame_seq + _sequence_offset[channel]; // TODO : fix dis
@@ -340,7 +323,8 @@ class MavrosSyncer {
                 ROS_ERROR_STREAM(_log_prefix << "expected: " << expected_event_seq << " in ev buffer: " << _event_buffer[channel].seq);
                 computeSequenceOffset(channel, _event_buffer[channel].seq, frame_seq, event_age);
                 _event_buffer[channel].reset();
-                _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); 
+                _trigger_queue.clear();
+                //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); 
                 return;
             }
             _state = SyncState::Synchronised;
@@ -359,7 +343,7 @@ class MavrosSyncer {
         _event_buffer[channel].reset();
 
         // Grab next event
-        _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : needs to be re-thought for multiple channels
+        //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : needs to be re-thought for multiple channels
         //getEvent(false, 0.8 * _max_time_delta);
     }
 
