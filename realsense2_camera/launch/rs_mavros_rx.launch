@@ -7,7 +7,7 @@
 
         <arg name="inter_cam_sync_mode" value="1"/>
         <arg name="hardware_sync_mode" value="2"/>
-        <arg name="static_time_offset"  value="0.0"/>   <!-- time calibration offset from kalibr -->
+        <arg name="static_time_offset"  value="-0.00335"/>   <!-- time calibration offset from kalibr -->
     </include>
 
 </launch>

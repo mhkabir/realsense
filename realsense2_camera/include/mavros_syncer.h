@@ -241,7 +241,7 @@ class MavrosSyncer {
                             const ros::Time &frame_stamp, double exposure, 
                             const sensor_msgs::ImagePtr img, const sensor_msgs::CameraInfo cinfo) {
 
-        //if(frame_seq % 400 == 0) {
+        //if(frame_seq % 200 == 0) {
         //    ROS_ERROR("simulating frame drop");
         //    return;
         //}
@@ -281,10 +281,12 @@ class MavrosSyncer {
         }
         _last_frame_seq = frame_seq;*/
 
+        // Grab this event
+        _trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : this wait is bad?
+
         if (!_event_buffer[channel].valid) {
-            ROS_WARN("wait for event");
-            // Grab this event
-            _trigger_queue.callAvailable(ros::WallDuration(0.8*_max_time_delta)); // TODO : this wait is bad?
+            ROS_ERROR("Event buffer empty");
+            return;
         }
         
         // This should be approximately 2ms
@@ -293,13 +295,13 @@ class MavrosSyncer {
 
         if(event_age > 0.9*_max_time_delta) { 
             ROS_ERROR("Delay high, clear buffer : %f ms", event_age * 1000.0);
-            _event_buffer[channel].reset();
-            _trigger_queue.clear();
+            //_trigger_queue.callAvailable();
             //getEvent(true, 0.8 * _max_time_delta);
             //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta)); // TODO : this doesn't actually wait if there is one in the buffer
             //_trigger_queue.callAvailable(ros::WallDuration(0.8 * _max_time_delta)); // TODO : this doesn't actually wait if there is one in the buffer
             //_trigger_queue.callOne();
-            //_trigger_queue.callOne(ros::WallDuration(0.8*_max_time_delta));
+            _trigger_queue.callAvailable(ros::WallDuration(0.8*_max_time_delta));
+            _event_buffer[channel].reset();
 
             // known issue : sometimes 2 events arrive right after each other (previous one was delayed??)
             // and the second callOne gets it, overwriting the "needed" one. This then causes an incorrect sequence detection
