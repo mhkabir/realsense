@@ -86,7 +86,7 @@ BaseRealSenseNode::BaseRealSenseNode(ros::NodeHandle& nodeHandle,
     _serial_no(serial_no),
     _is_initialized_time_base(false),
     _namespace(getNamespaceStr()),
-    _hardware_synchroniser(std::set<stream_index_pair>({INFRA1}))
+    _hardware_synchroniser()
 {
     // Types for depth stream
     _image_format[RS2_STREAM_DEPTH] = CV_16UC1;    // CVBridge type
@@ -634,19 +634,19 @@ void BaseRealSenseNode::setupDevice()
             }
         }
 
-        // Set Inter-camera synchronisation mode
+        // Set inter-camera synchronisation mode
         _sensors[DEPTH].set_option(RS2_OPTION_INTER_CAM_SYNC_MODE, _inter_cam_sync_mode);
         if(_inter_cam_sync_mode == 1) {
             // Enable output trigger if we are a master camera
             _sensors[DEPTH].set_option(RS2_OPTION_OUTPUT_TRIGGER_ENABLED, 1);
-            _sensors[DEPTH].set_option(RS2_OPTION_EMITTER_ENABLED, 0);
-            //_sensors[INFRA1].set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 1);
-            //_sensors[INFRA2].set_option(RS2_OPTION_FRAMES_QUEUE_SIZE, 1);
-
-            // TODO this can be smart and warn about unsupporte configurations
         }
         ROS_INFO_STREAM("Inter cam sync mode set to " << _inter_cam_sync_mode);
 
+        // Enable alternating strobe
+        _sensors[DEPTH].set_option(RS2_OPTION_EMITTER_ENABLED, 0);
+        _sensors[DEPTH].set_option(RS2_OPTION_EMITTER_ENABLED, 1);
+        _sensors[DEPTH].set_option(RS2_OPTION_EMITTER_ON_OFF, 0);
+        _sensors[DEPTH].set_option(RS2_OPTION_EMITTER_ON_OFF, 1);
     }
     catch(const std::exception& ex)
     {
@@ -2124,59 +2124,70 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
         }
         image.data = (uint8_t*)f.get_data();
     }
+
+    auto projector_state = f.get_frame_metadata(RS2_FRAME_METADATA_FRAME_LASER_POWER_MODE);
     if (f.is<rs2::depth_frame>())
     {
+        if(projector_state == 0) {
+            // For depth frames, don't publish if projector is off
+            ROS_INFO("ignoring depth with projector off");
+            return;
+        }
         image = fix_depth_scale(image, _depth_scaled_image[stream]);
+    } else {
+        if(projector_state == 1) {
+            // For infrared frames, don't publish if projector is on
+            ROS_INFO("ignoring infrared with projector on");
+            return;
+        }
     }
+
+    ROS_INFO("projector_state : %d", projector_state);
 
     ++(seq[stream]);
     auto& info_publisher = info_publishers.at(stream);
     auto& image_publisher = image_publishers.at(stream);
-    if(0 != info_publisher.getNumSubscribers() ||
-       0 != image_publisher.first.getNumSubscribers())
+
+    sensor_msgs::ImagePtr img;
+    img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
+    img->width = width;
+    img->height = height;
+    img->is_bigendian = false;
+    img->step = width * bpp;
+    img->header.frame_id = optical_frame_id.at(stream);
+    img->header.stamp = t;
+    img->header.seq = f.get_frame_number();
+
+    auto& cam_info = camera_info.at(stream);
+    if (cam_info.width != width)
     {
-        sensor_msgs::ImagePtr img;
-        img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
-        img->width = width;
-        img->height = height;
-        img->is_bigendian = false;
-        img->step = width * bpp;
-        img->header.frame_id = optical_frame_id.at(stream);
-        img->header.stamp = t;
-        img->header.seq = f.get_frame_number();
-
-        auto& cam_info = camera_info.at(stream);
-        if (cam_info.width != width)
-        {
-            updateStreamCalibData(f.get_profile().as<rs2::video_stream_profile>());
-        }
-        cam_info.header.stamp = img->header.stamp;
-        cam_info.header.seq = img->header.seq;
-
-        if(_hardware_sync_mode > 0) {
-            // Hardware synchronisation enabled, synchronise and publish
-            double exposure;
-            if(f.supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE)) {
-                exposure = static_cast<double>(f.get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE));
-            } else {
-                ROS_WARN("Frame does not provide exposure metadata. Using fixed exposure offset for timestamp...");
-                exposure = _sensors[DEPTH].get_option(RS2_OPTION_EXPOSURE); // TODO : INFRA1?
-            }
-
-            // /ros::spinOnce();
-
-            // Match and publish frame
-            _hardware_synchroniser.matchEvent(stream, f.get_frame_number(), t, exposure, img, cam_info);
-
-        } else {
-            // No hardware synchronisation, just publish
-            info_publisher.publish(cam_info);
-            image_publisher.first.publish(img);
-            image_publisher.second->update();
-        }
-
-        ROS_DEBUG("%s stream published", rs2_stream_to_string(f.get_profile().stream_type()));
+        updateStreamCalibData(f.get_profile().as<rs2::video_stream_profile>());
     }
+    cam_info.header.stamp = img->header.stamp;
+    cam_info.header.seq = img->header.seq;
+
+    if(_hardware_sync_mode > 0) {
+        // Hardware synchronisation enabled, synchronise and publish
+        double exposure;
+        if(f.supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE)) {
+            exposure = static_cast<double>(f.get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_EXPOSURE));
+        } else {
+            ROS_WARN("Frame does not provide exposure metadata. Using fixed exposure offset for timestamp...");
+            exposure = _sensors[DEPTH].get_option(RS2_OPTION_EXPOSURE); // TODO : INFRA1?
+        }
+
+        // Match and publish frame
+        _hardware_synchroniser.matchEvent(stream, f.get_frame_number(), t, exposure, img, cam_info);
+
+    } else {
+        // No hardware synchronisation, just publish
+        info_publisher.publish(cam_info);
+        image_publisher.first.publish(img);
+        image_publisher.second->update();
+    }
+
+    ROS_DEBUG("%s stream published", rs2_stream_to_string(f.get_profile().stream_type()));
+
 }
 
 bool BaseRealSenseNode::getEnabledProfile(const stream_index_pair& stream_index, rs2::stream_profile& profile)
